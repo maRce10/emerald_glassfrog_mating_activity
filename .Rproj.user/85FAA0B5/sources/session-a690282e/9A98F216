@@ -1,0 +1,27 @@
+{
+    "id": "9A98F216",
+    "path": "~/Dropbox/Projects/emerald_glassfrog_mating_activity/scripts/stats.qmd",
+    "project_path": "scripts/stats.qmd",
+    "type": "quarto_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1769620944106.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "chunk_output_type": "console",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "76,22",
+        "scrollLine": "64"
+    },
+    "folds": "135|6|186|0|\n313|6|371|0|\n",
+    "lastKnownWriteTime": 1769633269,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1769633269567,
+    "read_only": false,
+    "read_only_alternatives": []
+}

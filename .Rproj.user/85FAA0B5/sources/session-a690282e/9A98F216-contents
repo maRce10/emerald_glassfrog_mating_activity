@@ -1,0 +1,533 @@
+---
+title: Statistical analysis
+subtitle: Emerald glassfrog mating activity
+author: <a href="https://marce10.github.io/">Marcelo Araya-Salas</a>
+date: "`r Sys.Date()`"
+toc: true
+toc-depth: 3
+toc-location: left
+number-sections: true
+highlight-style: pygments
+format:
+  html:
+    df-print: kable
+    code-fold: true
+    code-tools: true
+    css: qmd.css
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r set root directory}
+#| eval: true
+#| echo: false
+
+# set working directory 
+knitr::opts_knit$set(root.dir =  "..")
+
+```
+
+```{r add link to github repo}
+#| eval: true
+#| output: asis
+#| echo: false
+
+# print link to github repo if any
+if (file.exists("./.git/config")){
+  config <- readLines("./.git/config")
+  url <- grep("url",  config, value = TRUE)
+  url <- gsub("\\turl = |.git$", "", url)
+  if (nchar(url) > 1)
+  cat("\nSource code and data found at [", url, "](", url, ")", sep = "")
+  }
+
+```
+
+```{r setup style}
+#| message: false
+#| warning: false
+
+# options to customize chunk outputs
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+ )
+
+```
+
+<!-- skyblue box -->
+
+::: {.alert .alert-info}
+# Purpose {.unnumbered .unlisted}
+
+-   Infer the effects of environmental variables on emerald glassfrog mating activity
+:::
+
+ 
+
+
+ 
+
+# Analysis flowchart {.unnumbered .unlisted}
+
+```{mermaid}
+
+flowchart LR
+  A[Read data] --> B(Format data) 
+  B --> C(Define DAGs)
+  C --> D(Statistical analysis)
+  D --> E(Model summary) 
+
+style A fill:#382A5433
+style B fill:#395D9C33
+style C fill:#3497A933
+style D fill:#60CEAC33
+
+```
+
+# Load packages {.unnumbered .unlisted}
+
+```{r load packages}
+
+# knitr is require for creating html/pdf/word reports
+# formatR is used for soft-wrapping code
+
+# install/ load packages
+sketchy::load_packages(packages = c("ggplot2", "viridis", "dagitty", "ggdag", "lunar", "brms", "brmsish"))
+
+```
+
+# Read data
+
+```{r}
+dat <- read.csv("./data/raw/males and pairs_all years.csv")
+
+dat$org.date <- dat$date
+
+dat$date <- paste(dat$year,  dat$date, sep = "-")
+
+# convert "8-Jun" to month-day format
+dat$date <- as.Date(dat$date, format = "%Y-%d-%b")
+
+#convert to "1970-01-02" format
+dat$date <- as.Date(dat$date, origin = "1970-01-01")
+
+## add moon
+dat$moonlight <- lunar.illumination(dat$date, shift = -6)
+
+```
+
+Prepare data
+```{r}
+# scale continuous variables
+dat$mean_temp_sc <- scale(dat$mean_temp)
+dat$mean_rh_sc <- scale(dat$mean_rh)
+dat$total_rainfall_sc <- scale(dat$total_rainfall)
+dat$prev_rainfall_sc <- scale(dat$previous_rainfall)
+dat$moonlight_sc <- scale(dat$moonlight)
+dat$year <- as.factor(dat$year)
+dat$num_males_sc <- scale(dat$num_males)
+```
+
+
+# DAG + stats
+
+## Male activity
+```{r}
+
+dag_l <- dagify(
+    total_rainfall_sc ~ evapotranspiration,
+    prev_rainfall_sc ~ evapotranspiration,
+    mean_temp_sc ~ total_rainfall_sc,
+    mean_rh_sc ~ total_rainfall_sc,
+    num_males ~ mean_rh_sc,
+    num_males ~ moonlight_sc,
+    mean_rh_sc ~ mean_temp_sc,
+    mean_rh_sc ~ prev_rainfall_sc,
+    mean_rh_sc ~ total_rainfall_sc,
+    num_males ~ mean_temp_sc,
+    num_males ~ prev_rainfall_sc,
+    num_males ~ total_rainfall_sc,
+    labels = c(
+        num_males = "Active\nmales",
+        mean_rh_sc = "Relative\nhumidity",
+        total_rainfall_sc = "Rainfall",
+        prev_rainfall_sc = "Previous\nrainfall",
+        moonlight_sc = "Moonlight",
+        mean_temp_sc = "Temperature",
+        evapotranspiration = "Evapotrans-\npiration",
+        latent = c("evapotrans-\npiration"),
+        outcome = "num_males"
+    )
+)
+
+set.seed(5)
+tidy_dag <- tidy_dagitty(dag_l)
+tidy_dag$data$type <- ifelse(is.na(tidy_dag$data$to), "outcome", "predictor")
+tidy_dag$data$type[tidy_dag$data$name %in% c("evapotranspiration")] <- "latent"
+
+ggplot(tidy_dag, aes(
+    x = x,
+    y = y,
+    xend = xend,
+    yend = yend
+)) + scale_color_viridis_d(
+    option = "G",
+    begin = 0.2,
+    end = 0.8,
+    alpha = 0.5
+) + geom_dag_edges_fan(
+    edge_color = mako(10, alpha = 0.4)[2],
+    arrow = grid::arrow(length = grid::unit(10, "pt"), type = "closed")
+) + geom_dag_point(aes(color = type), size = 24) + 
+    geom_dag_text(color = "black", aes(label = label, color = label)) +
+    theme_dag() + 
+    theme(legend.position = "bottom")
+
+```
+
+### SEM model
+```{r}
+#| eval: true
+#| results: 'asis'
+
+# ----------------------------
+# Submodels with year random intercept
+# ----------------------------
+
+
+bf_total_rain <- bf(
+  total_rainfall_sc ~ 1 + (1 | year)
+)
+
+bf_prev_rain <- bf(
+  prev_rainfall_sc ~ 1 + (1 | year)
+)
+
+bf_temp <- bf(
+  mean_temp_sc ~ 1 + total_rainfall_sc + (1 | year)
+)
+
+bf_rh <- bf(
+  mean_rh_sc ~ 1 +
+    mean_temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    (1 | year)
+)
+
+bf_males <- bf(
+  num_males ~ 
+    s(mean_rh_sc) +
+    mean_temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc +
+    (1 | year),
+  family = negbinomial()
+)
+
+# ----------------------------
+# Weakly informative priors
+# ----------------------------
+
+priors <- c(
+
+  # ----------------------------
+  # Linear slopes (all z-scored)
+  # ----------------------------
+
+  prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
+  prior(normal(0, 0.5), class = "b", resp = "meantempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "nummales"),
+
+  # ----------------------------
+  # Smooth term (humidity → males)
+  # ----------------------------
+
+  prior(normal(0, 1), class = "sds", resp = "nummales"),
+
+  # ----------------------------
+  # Year random effects
+  # ----------------------------
+
+  # ----------------------------
+  # Negative binomial dispersion
+  # ----------------------------
+
+  prior(exponential(1), class = "shape", resp = "nummales")
+)
+
+# run a prior sampling model to check the priors
+sem_prior_only <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  sample_prior = "only",
+  iter = 2000,
+  chains = 2,
+  cores = 2,
+  backend = "cmdstanr",
+  file = "male_sem_prior_only.RDS",
+  file_refit = "on_change")
+
+# check there are not flat priors
+ps <- prior_summary(sem_prior_only)
+
+any(grepl("flat", ps$prior))
+
+
+# ----------------------------
+# Fit full SEM
+# ----------------------------
+
+sem_model <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+    file = "./data/processed/male_sem_model.RDS",
+    backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+# beepr::beep(3)
+
+extended_summary(sem_model, highlight = TRUE, trace.palette = mako)
+
+```
+
+## Female activity
+```{r}
+
+dag_l <- dagify(
+    num_males_sc ~ mean_rh_sc,
+    num_males_sc ~ moonlight_sc,
+    num_males_sc ~ mean_temp_sc,
+    num_males_sc ~ prev_rainfall_sc,
+    num_males_sc ~ total_rainfall_sc,
+    total_rainfall_sc ~ evapotranspiration,
+    prev_rainfall_sc ~ evapotranspiration,
+    mean_temp_sc ~ total_rainfall_sc,
+    mean_rh_sc ~ total_rainfall_sc,
+    num_pairs ~ mean_rh_sc,
+    num_pairs ~ moonlight_sc,
+    mean_rh_sc ~ mean_temp_sc,
+    mean_rh_sc ~ prev_rainfall_sc,
+    mean_rh_sc ~ total_rainfall_sc,
+    num_pairs ~ mean_temp_sc,
+    num_pairs ~ prev_rainfall_sc,
+    num_pairs ~ total_rainfall_sc,
+    num_pairs ~ num_males_sc,
+    labels = c(
+        num_pairs = "Active\nfemales",
+        mean_rh_sc = "Relative\nhumidity",
+        total_rainfall_sc = "Rainfall",
+        prev_rainfall_sc = "Previous\nrainfall",
+        moonlight_sc = "Moonlight",
+        mean_temp_sc = "Temperature",
+        num_males_sc = "Active\nmales",
+        evapotranspiration = "Evapotrans-\npiration",
+        latent = c("evapotrans-\npiration"),
+        outcome = "num_pairs"
+    )
+)
+
+set.seed(5)
+tidy_dag <- tidy_dagitty(dag_l)
+tidy_dag$data$type <- ifelse(is.na(tidy_dag$data$to), "outcome", "predictor")
+tidy_dag$data$type[tidy_dag$data$name %in% c("evapotranspiration")] <- "latent"
+
+ggplot(tidy_dag, aes(
+    x = x,
+    y = y,
+    xend = xend,
+    yend = yend
+)) + scale_color_viridis_d(
+    option = "G",
+    begin = 0.2,
+    end = 0.8,
+    alpha = 0.5
+) + geom_dag_edges_fan(
+    edge_color = mako(10, alpha = 0.4)[2],
+    arrow = grid::arrow(length = grid::unit(10, "pt"), type = "closed")
+) + geom_dag_point(aes(color = type), size = 24) + 
+    geom_dag_text(color = "black", aes(label = label, color = label)) +
+    theme_dag() + 
+    theme(legend.position = "bottom")
+
+```
+
+### SEM model
+```{r}
+#| eval: true
+#| results: 'asis'
+
+# ----------------------------
+# Submodels
+# ----------------------------
+
+bf_total_rain <- bf(
+  total_rainfall_sc ~ 1 + (1 | year)
+)
+
+bf_prev_rain <- bf(
+  prev_rainfall_sc ~ 1 + (1 | year)
+)
+
+bf_temp <- bf(
+  mean_temp_sc ~ 1 +
+    total_rainfall_sc +
+    (1 | year)
+)
+
+bf_rh <- bf(
+  mean_rh_sc ~ 1 +
+    mean_temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    (1 | year)
+)
+
+# mediator: active males (count)
+bf_males <- bf(
+  num_males ~ 
+    s(mean_rh_sc) +
+    mean_temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc +
+    (1 | year),
+  family = negbinomial()
+)
+
+# outcome: active females (count)
+bf_pairs <- bf(
+  num_pairs ~ 
+    s(mean_rh_sc) +
+    mean_temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc +
+    num_males_sc +
+    (1 | year),
+  family = negbinomial()
+)
+
+# ----------------------------
+# Weakly informative priors
+# ----------------------------
+
+priors <- c(
+
+  # Linear slopes (all predictors z-scored)
+  prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
+  prior(normal(0, 0.5), class = "b", resp = "meantempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "nummales"),
+  prior(normal(0, 0.5), class = "b", resp = "numpairs"),
+
+  # Smooth terms (humidity effects)
+  prior(normal(0, 1), class = "sds", resp = "nummales"),
+  prior(normal(0, 1), class = "sds", resp = "numpairs"),
+
+  # Negative binomial dispersion
+  prior(exponential(1), class = "shape", resp = "nummales"),
+  prior(exponential(1), class = "shape", resp = "numpairs")
+)
+
+# ----------------------------
+# Prior predictive check
+# ----------------------------
+
+sem_prior_only <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    bf_pairs +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  sample_prior = "only",
+  iter = 2000,
+  chains = 2,
+  cores = 2,
+  backend = "cmdstanr",
+    file = "female_sem_prior_only.RDS",
+  file_refit = "on_change"
+)
+
+ps <- prior_summary(sem_prior_only)
+
+any(grepl("flat", ps$prior))
+
+
+# ----------------------------
+# Fit full SEM
+# ----------------------------
+
+fem_sem_model <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    bf_pairs +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+  file = "./data/processed/female_sem_model.RDS",
+  backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+extended_summary(
+  fem_sem_model,
+  highlight = TRUE, 
+  trace.palette = mako
+)
+
+```
+
+
+
+::: {.alert .alert-success}
+# Takeaways {#takeaways .unnumbered .unlisted}
+
+:::
+
+
+# Session information {.unnumbered .unlisted}
+
+<details>
+  <summary>Click to see</summary>
+```{r session info}
+#| echo: false
+
+# if devtools is installed use devtools::session_info()
+if (requireNamespace("devtools", quietly = TRUE)) {
+  devtools::session_info()
+} else {
+  sessionInfo()
+}
+
+```
+</details>
