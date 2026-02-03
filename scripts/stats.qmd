@@ -93,14 +93,17 @@ style D fill:#60CEAC33
 # formatR is used for soft-wrapping code
 
 # install/ load packages
-sketchy::load_packages(packages = c("ggplot2", "viridis", "dagitty", "ggdag", "lunar", "brms", "brmsish"))
+sketchy::load_packages(packages = c("ggplot2", "viridis", "dagitty", "ggdag", "lunar", "brms", "brmsish", "rstan"))
+
+# set theme globally
+  theme_set(theme_classic(base_size = 14))
 
 ```
 
 # Read data
 
 ```{r}
-dat <- read.csv("./data/raw/males and pairs_all years.csv")
+dat <- read.csv("./data/raw/males and pairs_all years_updated.csv")
 
 dat$org.date <- dat$date
 
@@ -121,13 +124,24 @@ Prepare data
 ```{r}
 # scale continuous variables
 dat$mean_temp_sc <- scale(dat$mean_temp)
+dat$min_temp_sc <- scale(dat$min_temp)
+dat$max_temp_sc <- scale(dat$max_temp)
 dat$mean_rh_sc <- scale(dat$mean_rh)
 dat$total_rainfall_sc <- scale(dat$total_rainfall)
-dat$prev_rainfall_sc <- scale(dat$previous_rainfall)
+dat$prev_rainfall_sc <- scale(dat$prev_rainfall)
 dat$moonlight_sc <- scale(dat$moonlight)
 dat$year <- as.factor(dat$year)
 dat$num_males_sc <- scale(dat$num_males)
 ```
+
+# Covariance temperature
+
+```{r}
+
+cor(dat[, c("mean_temp", "max_temp", "min_temp", "mean_rh")])
+
+```
+
 
 
 # DAG + stats
@@ -188,13 +202,12 @@ ggplot(tidy_dag, aes(
 
 ### SEM model
 ```{r}
-#| eval: true
+#| eval: false
 #| results: 'asis'
 
 # ----------------------------
 # Submodels with year random intercept
 # ----------------------------
-
 
 bf_total_rain <- bf(
   total_rainfall_sc ~ 1 + (1 | year)
@@ -205,12 +218,12 @@ bf_prev_rain <- bf(
 )
 
 bf_temp <- bf(
-  mean_temp_sc ~ 1 + total_rainfall_sc + (1 | year)
+  temp_sc ~ 1 + total_rainfall_sc + (1 | year)
 )
 
 bf_rh <- bf(
   mean_rh_sc ~ 1 +
-    mean_temp_sc +
+    temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
     (1 | year)
@@ -219,13 +232,15 @@ bf_rh <- bf(
 bf_males <- bf(
   num_males ~ 
     s(mean_rh_sc) +
-    mean_temp_sc +
+    temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
     moonlight_sc +
     (1 | year),
   family = negbinomial()
 )
+
+
 
 # ----------------------------
 # Weakly informative priors
@@ -238,7 +253,7 @@ priors <- c(
   # ----------------------------
 
   prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
-  prior(normal(0, 0.5), class = "b", resp = "meantempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "tempsc"),
   prior(normal(0, 0.5), class = "b", resp = "nummales"),
 
   # ----------------------------
@@ -258,6 +273,8 @@ priors <- c(
   prior(exponential(1), class = "shape", resp = "nummales")
 )
 
+dat$temp_sc <- dat$mean_temp_sc
+
 # run a prior sampling model to check the priors
 sem_prior_only <- brm(
   bf_total_rain +
@@ -272,7 +289,7 @@ sem_prior_only <- brm(
   iter = 2000,
   chains = 2,
   cores = 2,
-  backend = "cmdstanr",
+  # backend = "cmdstanr",
   file = "male_sem_prior_only.RDS",
   file_refit = "on_change")
 
@@ -304,11 +321,300 @@ sem_model <- brm(
   file_refit = "on_change"
 )
 
-# beepr::beep(3)
+add_criterion(sem_model, criterion = c("loo"))
 
-extended_summary(sem_model, highlight = TRUE, trace.palette = mako)
+dat$temp_sc <- dat$max_temp_sc
+
+sem_model_max_temp <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+    file = "./data/processed/male_sem_model_max_temp.RDS",
+    backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(sem_model_max_temp, criterion = c("loo"))
+
+
+dat$temp_sc <- dat$min_temp_sc
+
+
+sem_model_min_temp <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+    file = "./data/processed/male_sem_model_min_temp.RDS",
+    backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(sem_model_min_temp, criterion = c("loo"))
 
 ```
+
+### Model selection
+```{r}
+
+mean_temp_males_mod <- readRDS("./data/processed/male_sem_model.RDS")
+max_temp <- readRDS("./data/processed/male_sem_model_max_temp.RDS")
+min_temp <- readRDS("./data/processed/male_sem_model_min_temp.RDS")
+
+
+loo_diff <- loo::loo_compare(mean_temp_males_mod, max_temp, min_temp)
+
+rows <- rownames(loo_diff)
+loo_diff <- as.data.frame(loo_diff)
+
+loo_diff$model <- rows
+
+loo_diff
+
+```
+
+#### Best model
+```{r}
+#| results: asis
+
+extended_summary(mean_temp_males_mod, highlight = TRUE, trace.palette = mako)
+
+```
+
+#### Evaluate "year" effect
+```{r}
+#| eval: false
+
+# ----------------------------
+# Submodels with year random intercept
+# ----------------------------
+
+bf_total_rain <- bf(
+  total_rainfall_sc ~ 1
+)
+
+bf_prev_rain <- bf(
+  prev_rainfall_sc ~ 1
+)
+
+bf_temp <- bf(
+  temp_sc ~ 1 + total_rainfall_sc
+)
+
+bf_rh <- bf(
+  mean_rh_sc ~ 1 +
+    temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc
+)
+
+bf_males <- bf(
+  num_males ~ 
+    s(mean_rh_sc) +
+    temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc,
+  family = negbinomial()
+)
+
+
+
+# ----------------------------
+# Weakly informative priors
+# ----------------------------
+
+priors <- c(
+
+  # ----------------------------
+  # Linear slopes (all z-scored)
+  # ----------------------------
+
+  prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
+  prior(normal(0, 0.5), class = "b", resp = "tempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "nummales"),
+
+  # ----------------------------
+  # Smooth term (humidity → males)
+  # ----------------------------
+
+  prior(normal(0, 1), class = "sds", resp = "nummales"),
+
+  # ----------------------------
+  # Year random effects
+  # ----------------------------
+
+  # ----------------------------
+  # Negative binomial dispersion
+  # ----------------------------
+
+  prior(exponential(1), class = "shape", resp = "nummales")
+)
+
+dat$temp_sc <- dat$mean_temp_sc
+
+
+
+# ----------------------------
+# Fit full SEM
+# ----------------------------
+
+sem_model_no_year <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+    file = "./data/processed/male_sem_model_no_year.RDS",
+    backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(sem_model_no_year, criterion = c("loo"))
+
+```
+
+```{r}
+no_year <- readRDS("./data/processed/male_sem_model_no_year.RDS")
+
+loo_diff <- loo::loo_compare(mean_temp_males_mod, no_year)
+
+rows <- rownames(loo_diff)
+loo_diff <- as.data.frame(loo_diff)
+
+loo_diff$model <- rows
+
+loo_diff
+
+R2_full <- bayes_R2(mean_temp_males_mod, resp = "nummales",  summary = FALSE)
+
+R2_fixed <- bayes_R2(
+  mean_temp_males_mod,
+  resp = "nummales",
+  re_formula = NA,
+   summary = FALSE
+)
+
+str(R2_full)
+    
+delta_R2 <- R2_full - R2_fixed
+
+quantile(delta_R2, c(0.025, 0.5, 0.975))
+
+```
+
+### Graph raw data
+```{r}
+
+temp_grid <- data.frame(
+  mean_temp = seq(min(dat$mean_temp, na.rm = TRUE),
+                  max(dat$mean_temp, na.rm = TRUE),
+                  length.out = 100)
+)
+temp_grid$mean_rh_sc        <- 0
+temp_grid$prev_rainfall_sc <- 0
+temp_grid$total_rainfall_sc <- 0
+temp_grid$moonlight_sc     <- 0
+
+
+temp_center <- attr(dat$mean_temp_sc, "scaled:center")
+temp_scale  <- attr(dat$mean_temp_sc, "scaled:scale")
+
+temp_grid$temp_sc <- (temp_grid$mean_temp - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_males_mod,
+  resp = "nummales",
+  newdata = temp_grid,
+  re_formula = NA,   # population-level effect
+  summary = TRUE
+)
+
+temp_grid <- cbind(temp_grid, pred)
+
+
+ggplot(data = dat, aes(x = mean_temp, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid,
+            aes(x = mean_temp, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+  geom_ribbon(data = temp_grid,
+              aes(x = mean_temp, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+       labs(x = "Mean temperature (°C)", y = "Number of males")
+
+# by year
+temp_grid_year <- data.frame(
+  mean_temp = seq(min(dat$mean_temp, na.rm = TRUE),
+                  max(dat$mean_temp, na.rm = TRUE),
+                  length.out = 100),
+  year = unique(dat$year)
+)
+temp_grid_year$mean_rh_sc        <- 0
+temp_grid_year$prev_rainfall_sc <- 0
+temp_grid_year$total_rainfall_sc <- 0
+temp_grid_year$moonlight_sc     <- 0
+
+
+temp_center <- attr(dat$mean_temp_sc, "scaled:center")
+temp_scale  <- attr(dat$mean_temp_sc, "scaled:scale")
+
+temp_grid_year$temp_sc <- (temp_grid_year$mean_temp - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_males_mod,
+  resp = "nummales",
+  newdata = temp_grid_year,
+  re_formula = NULL,   # <-- this is the key
+  summary = TRUE
+)
+
+temp_grid_year <- cbind(temp_grid_year, pred)
+
+ggplot(data = dat, aes(x = mean_temp, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid_year,
+            aes(x = mean_temp, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+    facet_wrap(~year) +
+  geom_ribbon(data = temp_grid_year,
+              aes(x = mean_temp, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+    labs(x = "Mean temperature (°C)", y = "Number of males")
+
+  
+```
+
 
 ## Female activity
 ```{r}
@@ -373,7 +679,7 @@ ggplot(tidy_dag, aes(
 
 ### SEM model
 ```{r}
-#| eval: true
+#| eval: false
 #| results: 'asis'
 
 # ----------------------------
@@ -389,14 +695,14 @@ bf_prev_rain <- bf(
 )
 
 bf_temp <- bf(
-  mean_temp_sc ~ 1 +
+  temp_sc ~ 1 +
     total_rainfall_sc +
     (1 | year)
 )
 
 bf_rh <- bf(
   mean_rh_sc ~ 1 +
-    mean_temp_sc +
+    temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
     (1 | year)
@@ -406,7 +712,7 @@ bf_rh <- bf(
 bf_males <- bf(
   num_males ~ 
     s(mean_rh_sc) +
-    mean_temp_sc +
+    temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
     moonlight_sc +
@@ -418,7 +724,7 @@ bf_males <- bf(
 bf_pairs <- bf(
   num_pairs ~ 
     s(mean_rh_sc) +
-    mean_temp_sc +
+    temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
     moonlight_sc +
@@ -435,7 +741,7 @@ priors <- c(
 
   # Linear slopes (all predictors z-scored)
   prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
-  prior(normal(0, 0.5), class = "b", resp = "meantempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "tempsc"),
   prior(normal(0, 0.5), class = "b", resp = "nummales"),
   prior(normal(0, 0.5), class = "b", resp = "numpairs"),
 
@@ -499,14 +805,493 @@ fem_sem_model <- brm(
   file_refit = "on_change"
 )
 
+add_criterion(fem_sem_model, criterion = c("loo"))
+
+dat$temp_sc <- dat$max_temp_sc
+
+fem_max_temp <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    bf_pairs +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+  file = "./data/processed/female_sem_model_max_temp.RDS",
+  backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(fem_max_temp, criterion = c("loo"))
+
+dat$temp_sc <- dat$min_temp_sc
+
+fem_min_temp <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    bf_pairs +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+  file = "./data/processed/female_sem_model_min_temp.RDS",
+  backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(fem_min_temp, criterion = c("loo"))
+
+```
+
+### Model selection
+```{r}
+
+mean_temp_females_mod <- readRDS("./data/processed/female_sem_model.RDS")
+max_temp <- readRDS("./data/processed/female_sem_model_max_temp.RDS")
+min_temp <- readRDS("./data/processed/female_sem_model_min_temp.RDS")
+
+loo_diff <- loo::loo_compare(mean_temp_females_mod, max_temp, min_temp)
+
+rows <- rownames(loo_diff)
+loo_diff <- as.data.frame(loo_diff)
+
+loo_diff$model <- rows
+
+loo_diff
+
+```
+
+#### Best model
+```{r}
+#| results: asis
+
 extended_summary(
-  fem_sem_model,
+  mean_temp_females_mod,
   highlight = TRUE, 
   trace.palette = mako
 )
 
+
 ```
 
+#### Evaluate "year" effect
+```{r}
+#| eval: false
+
+# ----------------------------
+# Submodels with year random intercept
+# ----------------------------
+
+
+bf_total_rain <- bf(
+  total_rainfall_sc ~ 1 
+)
+
+bf_prev_rain <- bf(
+  prev_rainfall_sc ~ 1 
+)
+
+bf_temp <- bf(
+  temp_sc ~ 1 +
+    total_rainfall_sc
+)
+
+bf_rh <- bf(
+  mean_rh_sc ~ 1 +
+    temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc
+)
+
+# mediator: active males (count)
+bf_males <- bf(
+  num_males ~ 
+    s(mean_rh_sc) +
+    temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc,
+  family = negbinomial()
+)
+
+# outcome: active females (count)
+bf_pairs <- bf(
+  num_pairs ~ 
+    s(mean_rh_sc) +
+    temp_sc +
+    prev_rainfall_sc +
+    total_rainfall_sc +
+    moonlight_sc +
+    num_males_sc,
+  family = negbinomial()
+)
+
+# ----------------------------
+# Weakly informative priors
+# ----------------------------
+
+priors <- c(
+
+  # Linear slopes (all predictors z-scored)
+  prior(normal(0, 0.5), class = "b", resp = "meanrhsc"),
+  prior(normal(0, 0.5), class = "b", resp = "tempsc"),
+  prior(normal(0, 0.5), class = "b", resp = "nummales"),
+  prior(normal(0, 0.5), class = "b", resp = "numpairs"),
+
+  # Smooth terms (humidity effects)
+  prior(normal(0, 1), class = "sds", resp = "nummales"),
+  prior(normal(0, 1), class = "sds", resp = "numpairs"),
+
+  # Negative binomial dispersion
+  prior(exponential(1), class = "shape", resp = "nummales"),
+  prior(exponential(1), class = "shape", resp = "numpairs")
+)
+
+# Fit full SEM
+fem_sem_model_no_year <- brm(
+  bf_total_rain +
+    bf_prev_rain +
+    bf_temp +
+    bf_rh +
+    bf_males +
+    bf_pairs +
+    set_rescor(FALSE),
+  data = dat,
+  prior = priors,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  control = list(adapt_delta = 0.95),
+  file = "./data/processed/female_sem_model_no_year.RDS",
+  backend = "cmdstanr",
+  file_refit = "on_change"
+)
+
+add_criterion(fem_sem_model_no_year, criterion = c("loo"))
+
+
+```
+
+```{r}
+no_year <- readRDS("./data/processed/female_sem_model_no_year.RDS")
+
+loo_diff <- loo::loo_compare(mean_temp_females_mod, no_year)
+
+rows <- rownames(loo_diff)
+loo_diff <- as.data.frame(loo_diff)
+
+loo_diff$model <- rows
+
+loo_diff
+
+R2_full <- bayes_R2(mean_temp_females_mod, resp = "numpairs",  summary = FALSE)
+
+R2_fixed <- bayes_R2(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  re_formula = NA,
+   summary = FALSE
+)
+
+str(R2_full)
+    
+delta_R2 <- R2_full - R2_fixed
+
+quantile(delta_R2, c(0.025, 0.5, 0.975))
+
+```
+
+### Graph raw data
+
+Temperature
+```{r}
+
+temp_grid <- data.frame(
+  mean_temp = seq(min(dat$mean_temp, na.rm = TRUE),
+                  max(dat$mean_temp, na.rm = TRUE),
+                  length.out = 100)
+)
+temp_grid$mean_rh_sc        <- 0
+temp_grid$prev_rainfall_sc <- 0
+temp_grid$total_rainfall_sc <- 0
+temp_grid$moonlight_sc     <- 0
+temp_grid$num_males_sc     <- 0
+
+
+temp_center <- attr(dat$mean_temp_sc, "scaled:center")
+temp_scale  <- attr(dat$mean_temp_sc, "scaled:scale")
+
+temp_grid$temp_sc <- (temp_grid$mean_temp - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid,
+  re_formula = NA,   # population-level effect
+  summary = TRUE
+)
+
+temp_grid <- cbind(temp_grid, pred)
+
+ggplot(data = dat, aes(x = mean_temp, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3)  +
+       labs(x = "Mean temperature (°C)", y = "Number of amplexus")
+
+ggplot(data = dat, aes(x = mean_temp, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid,
+            aes(x = mean_temp, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+  geom_ribbon(data = temp_grid,
+              aes(x = mean_temp, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+       labs(x = "Mean temperature (°C)", y = "Number of amplexus")
+
+# by year
+temp_grid_year <- data.frame(
+  mean_temp = seq(min(dat$mean_temp, na.rm = TRUE),
+                  max(dat$mean_temp, na.rm = TRUE),
+                  length.out = 100),
+  year = unique(dat$year)
+)
+temp_grid_year$mean_rh_sc        <- 0
+temp_grid_year$prev_rainfall_sc <- 0
+temp_grid_year$total_rainfall_sc <- 0
+temp_grid_year$moonlight_sc     <- 0
+temp_grid_year$num_males_sc     <- 0
+
+temp_center <- attr(dat$mean_temp_sc, "scaled:center")
+temp_scale  <- attr(dat$mean_temp_sc, "scaled:scale")
+
+temp_grid_year$temp_sc <- (temp_grid_year$mean_temp - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid_year,
+  re_formula = NULL,   # <-- this is the key
+  summary = TRUE
+)
+
+temp_grid_year <- cbind(temp_grid_year, pred)
+
+ggplot(data = dat, aes(x = mean_temp, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+    facet_wrap(~year) +
+    labs(x = "Mean temperature (°C)", y = "Number of amplexus")
+
+ggplot(data = dat, aes(x = mean_temp, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid_year,
+            aes(x = mean_temp, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+    facet_wrap(~year) +
+  geom_ribbon(data = temp_grid_year,
+              aes(x = mean_temp, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+    labs(x = "Mean temperature (°C)", y = "Number of amplexus")
+
+  
+```
+
+Total rainfall
+```{r}
+
+temp_grid <- data.frame(
+  total_rainfall = seq(min(dat$total_rainfall, na.rm = TRUE),
+                  max(dat$total_rainfall, na.rm = TRUE),
+                  length.out = 100)
+)
+
+temp_grid$temp_sc     <- 0
+temp_grid$mean_rh_sc        <- 0
+temp_grid$prev_rainfall_sc <- 0
+temp_grid$moonlight_sc     <- 0
+temp_grid$num_males_sc     <- 0
+
+
+temp_center <- attr(dat$total_rainfall_sc, "scaled:center")
+temp_scale  <- attr(dat$total_rainfall_sc, "scaled:scale")
+
+temp_grid$total_rainfall_sc <- (temp_grid$total_rainfall - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid,
+  re_formula = NA,   # population-level effect
+  summary = TRUE
+)
+
+temp_grid <- cbind(temp_grid, pred)
+
+
+ggplot(data = dat, aes(x = total_rainfall, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid,
+            aes(x = total_rainfall, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+  geom_ribbon(data = temp_grid,
+              aes(x = total_rainfall, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+       labs(x = "Maximum rainfall (mm)", y = "Number of amplexus")
+
+
+# by year
+temp_grid_year <- expand.grid(
+  total_rainfall = seq(min(dat$total_rainfall, na.rm = TRUE),
+                  max(dat$total_rainfall, na.rm = TRUE)),
+                  length.out = 100,
+  year = unique(dat$year))
+
+temp_grid_year$temp_sc     <- 0
+temp_grid_year$mean_rh_sc        <- 0
+temp_grid_year$prev_rainfall_sc <- 0
+temp_grid_year$moonlight_sc     <- 0
+temp_grid_year$num_males_sc     <- 0
+
+temp_center <- attr(dat$total_rainfall_sc, "scaled:center")
+temp_scale  <- attr(dat$total_rainfall_sc, "scaled:scale")
+
+temp_grid_year$total_rainfall_sc <- (temp_grid_year$total_rainfall - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid_year,
+  re_formula = NULL,   # <-- this is the key
+  summary = TRUE
+)
+
+temp_grid_year <- cbind(temp_grid_year, pred)
+
+ggplot(data = dat, aes(x = total_rainfall, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid_year,
+            aes(x = total_rainfall, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+    facet_wrap(~year) +
+  geom_ribbon(data = temp_grid_year,
+              aes(x = total_rainfall, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+    labs(x = "Maximum rainfall (mm)", y = "Number of amplexus")
+
+  
+```
+
+Number of males
+```{r}
+
+temp_grid <- data.frame(
+  num_males = seq(min(dat$num_males, na.rm = TRUE),
+                  max(dat$num_males, na.rm = TRUE),
+                  length.out = 100)
+)
+
+temp_grid$temp_sc     <- 0
+temp_grid$mean_rh_sc        <- 0
+temp_grid$prev_rainfall_sc <- 0
+temp_grid$total_rainfall_sc <- 0
+temp_grid$moonlight_sc     <- 0
+
+
+temp_center <- attr(dat$num_males_sc, "scaled:center")
+temp_scale  <- attr(dat$num_males_sc, "scaled:scale")
+
+temp_grid$num_males_sc <- (temp_grid$num_males - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid,
+  re_formula = NA,   # population-level effect
+  summary = TRUE
+)
+
+temp_grid <- cbind(temp_grid, pred)
+
+ggplot(data = dat, aes(x = num_males, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid,
+            aes(x = num_males, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+  geom_ribbon(data = temp_grid,
+              aes(x = num_males, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+       labs(x = "Number of males", y = "Number of amplexus")
+
+
+# by year
+temp_grid_year <- expand.grid(
+  num_males = seq(min(dat$num_males, na.rm = TRUE),
+                  max(dat$num_males, na.rm = TRUE)),
+                  length.out = 100,
+  year = unique(dat$year))
+
+temp_grid_year$temp_sc     <- 0
+temp_grid_year$mean_rh_sc        <- 0
+temp_grid_year$prev_rainfall_sc <- 0
+temp_grid_year$total_rainfall_sc <- 0
+temp_grid_year$moonlight_sc     <- 0
+
+temp_center <- attr(dat$num_males_sc, "scaled:center")
+temp_scale  <- attr(dat$num_males_sc, "scaled:scale")
+
+temp_grid_year$num_males_sc <- (temp_grid_year$num_males - temp_center) / temp_scale
+
+
+pred <- fitted(
+  mean_temp_females_mod,
+  resp = "numpairs",
+  newdata = temp_grid_year,
+  re_formula = NULL,   # <-- this is the key
+  summary = TRUE
+)
+
+temp_grid_year <- cbind(temp_grid_year, pred)
+
+ggplot(data = dat, aes(x = num_males, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+  geom_line(data = temp_grid_year,
+            aes(x = num_males, y = Estimate),
+            linewidth = 1.2,
+            color = mako(10, alpha = 0.8)[3]) +
+    facet_wrap(~year) +
+  geom_ribbon(data = temp_grid_year,
+              aes(x = num_males, y = Estimate, ymin = Q2.5, ymax = Q97.5),
+              alpha = 0.1,
+              fill = "black") +
+    labs(x = "Number of males", y = "Number of amplexus")
+
+  
+```
 
 
 ::: {.alert .alert-success}
