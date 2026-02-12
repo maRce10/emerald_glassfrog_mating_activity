@@ -528,8 +528,9 @@ quantile(delta_R2, c(0.025, 0.5, 0.975))
 ```
 
 ### Graph raw data
-```{r}
 
+Temperature
+```{r}
 temp_grid <- data.frame(
   mean_temp = seq(min(dat$mean_temp, na.rm = TRUE),
                   max(dat$mean_temp, na.rm = TRUE),
@@ -611,8 +612,34 @@ ggplot(data = dat, aes(x = mean_temp, y = num_males)) +
               alpha = 0.1,
               fill = "black") +
     labs(x = "Mean temperature (°C)", y = "Number of males")
+```
 
-  
+Previous rainfall
+```{r}
+
+ggplot(data = dat, aes(x = prev_rainfall, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Previous rainfall (mm)", y = "Number of males")
+
+```
+
+Total rainfall
+```{r}
+
+ggplot(data = dat, aes(x = total_rainfall, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Rainfall (mm)", y = "Number of males")
+
+```
+
+Moonlight
+```{r}
+
+ggplot(data = dat, aes(x = moonlight * 100, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Moonlight (%)", y = "Number of males")
+
+ 
 ```
 
 
@@ -1291,6 +1318,20 @@ ggplot(data = dat, aes(x = num_males, y = num_pairs)) +
     labs(x = "Number of males", y = "Number of amplexus")
 
   
+```
+
+Previous rainfall
+```{r}
+ggplot(data = dat, aes(x = prev_rainfall, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Previous rainfall (mm)", y = "Number of amplexus")
+```
+
+Moonlight
+```{r}
+ggplot(data = dat, aes(x = moonlight * 100, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Moonlight (%)", y = "Number of amplexus")
 ```
 
 
