@@ -4,7 +4,7 @@ subtitle: Emerald glassfrog mating activity
 author: <a href="https://marce10.github.io/">Marcelo Araya-Salas</a>
 date: "`r Sys.Date()`"
 toc: true
-toc-depth: 3
+toc-depth: 5
 toc-location: left
 number-sections: true
 highlight-style: pygments
@@ -93,11 +93,13 @@ style D fill:#60CEAC33
 # formatR is used for soft-wrapping code
 
 # install/ load packages
-sketchy::load_packages(packages = c("ggplot2", "viridis", "dagitty", "ggdag", "lunar", "brms", "brmsish", "rstan"))
+sketchy::load_packages(packages = c("ggplot2", "viridis", "dagitty", "ggdag", "lunar", "brms", "brmsish", "rstan", "ggraph", "ggparty"))
 
 # set theme globally
-  theme_set(theme_classic(base_size = 14))
+  theme_set(theme_classic(base_size = 20))
 
+source("~/Dropbox/R_package_testing/brmsish/R/extended_summary.R")
+source("~/Dropbox/R_package_testing/brmsish/R/helpers.R")
 ```
 
 # Read data
@@ -231,7 +233,7 @@ bf_rh <- bf(
 
 bf_males <- bf(
   num_males ~ 
-    s(mean_rh_sc) +
+    mean_rh_sc +
     temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
@@ -256,19 +258,7 @@ priors <- c(
   prior(normal(0, 0.5), class = "b", resp = "tempsc"),
   prior(normal(0, 0.5), class = "b", resp = "nummales"),
 
-  # ----------------------------
-  # Smooth term (humidity → males)
-  # ----------------------------
-
-  prior(normal(0, 1), class = "sds", resp = "nummales"),
-
-  # ----------------------------
-  # Year random effects
-  # ----------------------------
-
-  # ----------------------------
-  # Negative binomial dispersion
-  # ----------------------------
+    # Negative binomial dispersion
 
   prior(exponential(1), class = "shape", resp = "nummales")
 )
@@ -394,7 +384,45 @@ loo_diff
 ```{r}
 #| results: asis
 
-extended_summary(mean_temp_males_mod, highlight = TRUE, trace.palette = mako)
+extended_summary(
+  mean_temp_males_mod,
+  highlight = TRUE,
+  trace.palette = mako,
+  print.name = FALSE
+)
+
+es <- extended_summary(
+  mean_temp_males_mod,
+  highlight = TRUE,
+  trace.palette = mako,
+  remove.intercepts = TRUE,
+  print.name = FALSE,
+  beta.prefix = "b_nummales",
+  trace = FALSE,
+  fill = mako(10, alpha = 0.8)[7],
+  gsub.pattern = c(
+    "b_nummales_",
+    "_sc",
+    "mean_rh",
+    "moonlight",
+    "prev_rainfall",
+    "temp",
+    "total_rainfall"
+  ),
+  gsub.replacement = c(
+    "",
+    "",
+    "Relative humidity",
+    "Moonlight",
+    "Previous rainfall",
+    "Temperature",
+    "Total rainfall"
+  ),
+  return = TRUE, 
+  ylab = "Predictor"
+)
+
+es$plot
 
 ```
 
@@ -518,12 +546,107 @@ R2_fixed <- bayes_R2(
   re_formula = NA,
    summary = FALSE
 )
-
-str(R2_full)
     
 delta_R2 <- R2_full - R2_fixed
 
 quantile(delta_R2, c(0.025, 0.5, 0.975))
+
+```
+
+### Parametized DAG
+```{r}
+
+edge_data <- tidy_dag$data
+fixef_df <- as.data.frame(fixef(mean_temp_males_mod))
+fixef_df$term <- rownames(fixef_df)
+
+fixef_df <- fixef_df[grep(pattern = "Intercept", fixef_df$term, invert = TRUE), ]
+
+split_terms <- strsplit(fixef_df$term, "_")
+
+fixef_df$to <- sapply(split_terms, `[`, 1)
+fixef_df$to <- gsub("sc", "_sc", fixef_df$to)
+fixef_df$to <- gsub("mean", "mean_", fixef_df$to)
+fixef_df$to <- gsub("num", "num_", fixef_df$to)
+fixef_df$to <- gsub("temp_", "mean_temp_", fixef_df$to)
+
+# split from "_" to end
+fixef_df$from <- sapply(split_terms, function(x) paste(x[-1], collapse = "_"))
+fixef_df$from <- gsub("temp_", "mean_temp_", fixef_df$from)
+
+sem_estimates <- data.frame(
+  from = fixef_df$from,
+  to   = fixef_df$to,
+  est  = fixef_df$Estimate,
+  l95  = fixef_df$Q2.5,
+  u95  = fixef_df$Q97.5,
+  p    = 2 * pmin(
+            pnorm(fixef_df$Estimate / fixef_df$Est.Error),
+            1 - pnorm(fixef_df$Estimate / fixef_df$Est.Error)
+         )
+)
+
+
+edge_data <- merge(edge_data, sem_estimates[, c("from", "to", "est", "l95", "u95")], by.x = c("name", "to"), by.y = c("from","to"), all.x = TRUE)
+
+edge_data$sig <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  "solid",
+  "dashed"
+)
+
+edge_data$alpha <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  1,
+  0
+)
+
+edge_data$color <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  "black",
+  "gray"
+)
+
+edge_data$color[edge_data$name == "num_males"] <- "black"
+edge_data$est <- ifelse(
+!is.na(edge_data$l95),
+  edge_data$est,
+  0
+)
+
+
+tidy_dag_param <- tidy_dag
+
+tidy_dag_param$data <- edge_data
+
+ggplot(tidy_dag_param, aes(
+    x = x,
+    y = y,
+    xend = xend,
+    yend = yend,
+    edge_linetype = sig,
+    edge_alpha = alpha
+)) + scale_color_viridis_d(
+    option = "G",
+    begin = 0.2,
+    end = 0.8,
+    alpha = 0.5
+) + 
+    geom_dag_edges_fan(aes(size = (est / max(abs(est), na.rm = TRUE))^2),
+    arrow = grid::arrow(length = grid::unit(10, "pt"), type = "closed")
+) +
+    geom_dag_point(aes(color = type), 
+                   size = 24) + 
+    geom_dag_text(aes(label = label), color = c(edge_data$color, edge_data$color)[!duplicated(c(edge_data$name, edge_data$to))]) +
+    scale_edge_alpha(range = c(0.2, 1), guide = NULL) +
+    scale_edge_linetype_manual(values = c("solid" = "solid", "dashed" = "dashed"), guide = NULL) +
+    theme_dag() + 
+    theme(legend.position = "bottom") +
+    guides(size = "none")
+
+
+
+
 
 ```
 
@@ -639,7 +762,15 @@ ggplot(data = dat, aes(x = moonlight * 100, y = num_males)) +
     geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
        labs(x = "Moonlight (%)", y = "Number of males")
 
- 
+```
+
+Relative humidity
+```{r}
+
+ggplot(data = dat, aes(x = mean_rh, y = num_males)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Relative humidity (%)", y = "Number of males")
+
 ```
 
 
@@ -680,11 +811,11 @@ dag_l <- dagify(
 )
 
 set.seed(5)
-tidy_dag <- tidy_dagitty(dag_l)
-tidy_dag$data$type <- ifelse(is.na(tidy_dag$data$to), "outcome", "predictor")
-tidy_dag$data$type[tidy_dag$data$name %in% c("evapotranspiration")] <- "latent"
+tidy_dag_fem <- tidy_dagitty(dag_l)
+tidy_dag_fem$data$type <- ifelse(is.na(tidy_dag_fem$data$to), "outcome", "predictor")
+tidy_dag_fem$data$type[tidy_dag_fem$data$name %in% c("evapotranspiration")] <- "latent"
 
-ggplot(tidy_dag, aes(
+ggplot(tidy_dag_fem, aes(
     x = x,
     y = y,
     xend = xend,
@@ -698,7 +829,7 @@ ggplot(tidy_dag, aes(
     edge_color = mako(10, alpha = 0.4)[2],
     arrow = grid::arrow(length = grid::unit(10, "pt"), type = "closed")
 ) + geom_dag_point(aes(color = type), size = 24) + 
-    geom_dag_text(color = "black", aes(label = label, color = label)) +
+    geom_dag_text(color = "black", aes(label = label, color = color)) +
     theme_dag() + 
     theme(legend.position = "bottom")
 
@@ -738,7 +869,7 @@ bf_rh <- bf(
 # mediator: active males (count)
 bf_males <- bf(
   num_males ~ 
-    s(mean_rh_sc) +
+    mean_rh_sc +
     temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
@@ -750,7 +881,7 @@ bf_males <- bf(
 # outcome: active females (count)
 bf_pairs <- bf(
   num_pairs ~ 
-    s(mean_rh_sc) +
+    mean_rh_sc +
     temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
@@ -772,10 +903,6 @@ priors <- c(
   prior(normal(0, 0.5), class = "b", resp = "nummales"),
   prior(normal(0, 0.5), class = "b", resp = "numpairs"),
 
-  # Smooth terms (humidity effects)
-  prior(normal(0, 1), class = "sds", resp = "nummales"),
-  prior(normal(0, 1), class = "sds", resp = "numpairs"),
-
   # Negative binomial dispersion
   prior(exponential(1), class = "shape", resp = "nummales"),
   prior(exponential(1), class = "shape", resp = "numpairs")
@@ -784,6 +911,7 @@ priors <- c(
 # ----------------------------
 # Prior predictive check
 # ----------------------------
+dat$temp_sc <- dat$mean_temp_sc
 
 sem_prior_only <- brm(
   bf_total_rain +
@@ -907,9 +1035,44 @@ loo_diff
 extended_summary(
   mean_temp_females_mod,
   highlight = TRUE, 
-  trace.palette = mako
+  trace.palette = mako, 
+  print.name = FALSE
 )
 
+es <- extended_summary(
+  mean_temp_females_mod,
+  highlight = TRUE,
+  trace.palette = mako,
+  remove.intercepts = TRUE,
+  print.name = FALSE,
+  beta.prefix = "b_numpairs",
+  trace = FALSE,
+  fill = mako(10, alpha = 0.8)[7],
+  gsub.pattern = c(
+    "b_numpairs_",
+    "_sc",
+    "mean_rh",
+    "moonlight",
+    "prev_rainfall",
+    "temp",
+    "total_rainfall",
+    "num_males"
+  ),
+  gsub.replacement = c(
+    "",
+    "",
+    "Relative humidity",
+    "Moonlight",
+    "Previous rainfall",
+    "Temperature",
+    "Total rainfall",
+    "Number of males"
+  ),
+  return = TRUE, 
+  ylab = "Predictor"
+)
+
+es$plot
 
 ```
 
@@ -956,7 +1119,7 @@ bf_males <- bf(
 # outcome: active females (count)
 bf_pairs <- bf(
   num_pairs ~ 
-    s(mean_rh_sc) +
+    mean_rh_sc +
     temp_sc +
     prev_rainfall_sc +
     total_rainfall_sc +
@@ -979,8 +1142,7 @@ priors <- c(
 
   # Smooth terms (humidity effects)
   prior(normal(0, 1), class = "sds", resp = "nummales"),
-  prior(normal(0, 1), class = "sds", resp = "numpairs"),
-
+ 
   # Negative binomial dispersion
   prior(exponential(1), class = "shape", resp = "nummales"),
   prior(exponential(1), class = "shape", resp = "numpairs")
@@ -1032,11 +1194,108 @@ R2_fixed <- bayes_R2(
    summary = FALSE
 )
 
-str(R2_full)
-    
 delta_R2 <- R2_full - R2_fixed
 
 quantile(delta_R2, c(0.025, 0.5, 0.975))
+
+```
+
+### Parametized DAG
+```{r}
+
+edge_data <- tidy_dag_fem$data
+fixef_df <- as.data.frame(fixef(mean_temp_females_mod))
+
+fixef_df$term <- rownames(fixef_df)
+
+fixef_df <- fixef_df[grep(pattern = "Intercept", fixef_df$term, invert = TRUE), ]
+
+split_terms <- strsplit(fixef_df$term, "_")
+
+fixef_df$to <- sapply(split_terms, `[`, 1)
+fixef_df$to <- gsub("sc", "_sc", fixef_df$to)
+fixef_df$to <- gsub("mean", "mean_", fixef_df$to)
+fixef_df$to <- gsub("num", "num_", fixef_df$to)
+fixef_df$to <- gsub("temp_", "mean_temp_", fixef_df$to)
+fixef_df$to <- gsub("males", "males_sc", fixef_df$to)
+
+# split from "_" to end
+fixef_df$from <- sapply(split_terms, function(x) paste(x[-1], collapse = "_"))
+fixef_df$from <- gsub("temp_", "mean_temp_", fixef_df$from)
+fixef_df$from <- gsub("males$", "males_sc", fixef_df$from)
+
+sem_estimates <- data.frame(
+  from = fixef_df$from,
+  to   = fixef_df$to,
+  est  = fixef_df$Estimate,
+  l95  = fixef_df$Q2.5,
+  u95  = fixef_df$Q97.5,
+  p    = 2 * pmin(
+            pnorm(fixef_df$Estimate / fixef_df$Est.Error),
+            1 - pnorm(fixef_df$Estimate / fixef_df$Est.Error)
+         )
+)
+
+
+edge_data <- merge(edge_data, sem_estimates[, c("from", "to", "est", "l95", "u95")], by.x = c("name", "to"), by.y = c("from","to"), all.x = TRUE)
+
+edge_data$sig <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  "solid",
+  "dashed"
+)
+
+edge_data$alpha <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  1,
+  0
+)
+
+edge_data$color <- ifelse(
+  edge_data$l95 * edge_data$u95 > 0 & !is.na(edge_data$l95),
+  "black",
+  "gray"
+)
+
+edge_data$color[edge_data$name == "num_pairs"] <- "black"
+edge_data$est <- ifelse(
+!is.na(edge_data$l95),
+  edge_data$est,
+  0
+)
+
+
+tidy_dag_param_fem <- tidy_dag_fem
+
+tidy_dag_param_fem$data <- edge_data
+
+ggplot(tidy_dag_param_fem, aes(
+    x = x,
+    y = y,
+    xend = xend,
+    yend = yend,
+    edge_linetype = sig,
+    edge_alpha = alpha
+)) + scale_color_viridis_d(
+    option = "G",
+    begin = 0.2,
+    end = 0.8,
+    alpha = 0.5
+) + 
+    geom_dag_edges_fan(aes(size = (est / max(abs(est), na.rm = TRUE))^2),
+    arrow = grid::arrow(length = grid::unit(10, "pt"), type = "closed")
+) +
+    geom_dag_point(aes(color = type), 
+                   size = 24) + 
+    geom_dag_text(aes(label = label), color = c(NA, c(edge_data$color, edge_data$color)[!duplicated(c(edge_data$name, edge_data$to))])) +
+    scale_edge_alpha(range = c(0.2, 1), guide = NULL) +
+    scale_edge_linetype_manual(values = c("solid" = "solid", "dashed" = "dashed"), guide = NULL) +
+    theme_dag() + 
+    theme(legend.position = "bottom") +
+    guides(size = "none")
+
+
+
 
 ```
 
@@ -1334,6 +1593,14 @@ ggplot(data = dat, aes(x = moonlight * 100, y = num_pairs)) +
        labs(x = "Moonlight (%)", y = "Number of amplexus")
 ```
 
+Relative humidity
+```{r}
+
+ggplot(data = dat, aes(x = mean_rh, y = num_pairs)) +
+    geom_point(alpha = 0.4, color = mako(6, alpha = 0.6)[3], size = 3) +
+       labs(x = "Relative humidity (%)", y = "Number of amplexus")
+
+```
 
 ::: {.alert .alert-success}
 # Takeaways {#takeaways .unnumbered .unlisted}
